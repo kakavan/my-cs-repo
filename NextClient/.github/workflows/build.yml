@@ -1,0 +1,70 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (vs2022, Release, x86)
+    runs-on: windows-2022
+
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg_bincache
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          lfs: true
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg_bincache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'custom-vcpkg-ports/**') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Create vcpkg binary cache directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/vcpkg_bincache" | Out-Null
+
+      - name: Bootstrap vcpkg
+        run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Configure
+        run: cmake --preset vs2022 "-DNEXTCLIENT_INSTALL_DIR=${{ github.workspace }}\install"
+
+      - name: Build
+        run: cmake --build --preset vs2022-release --target BUILD_ALL
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextClient-${{ github.sha }}
+          path: install/
+          if-no-files-found: error
+
+      - name: Upload PDBs
+        uses: actions/upload-artifact@v4
+        with:
+          name: NextClient-pdb-${{ github.sha }}
+          path: out/pdb/Release/*.pdb
+          if-no-files-found: error
+
+      # after the uploads: a test build writes its PDBs into out/pdb as well
+      - name: Configure tests
+        run: cmake --preset vs2022 -B build/vs2022-tests -DNEXTCLIENT_BUILD_TESTS=ON
+
+      - name: Build tests
+        run: cmake --build build/vs2022-tests --config Release --target engine_mini-tests gameui-tests view-tests crosshair-tests
+
+      - name: Run tests
+        run: ctest --test-dir build/vs2022-tests -C Release --output-on-failure
